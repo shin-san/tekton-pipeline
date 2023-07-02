@@ -1,0 +1,53 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: openshift-deploy
+spec:
+  description: >-
+    Deploy Container Image Using Kustomize
+  params:
+    - default: >-
+        registry.redhat.io/openshift4/ose-cli:latest
+      description: Base Image
+      name: BASE_IMAGE
+      type: string
+
+    - name: VERSION
+      description: The OpenShift Version to use
+      type: string
+      default: "4.11"
+
+    - name: DEPLOYMENT_NAME
+      description: Name of the Deployment
+      type: string
+      
+    - name: DEPLOYMENT_PATH
+      description: Path to where Kustomize Should be Ran From
+      type: string
+
+    - name: DEPLOYMENT_NAMESPACE
+      description: Namespace where the Deployment will be deployed.
+      type: string
+
+  workspaces:
+    - name: source
+
+  steps:
+    - image: $(params.BASE_IMAGE):$(params.VERSION)
+      name: deploy
+      resources: {}
+      script: |
+        #!/bin/bash
+
+        cd $(params.DEPLOYMENT_PATH)
+        if [[ $? -ne 0 ]] ; then
+          exit 1
+        fi
+
+        oc apply -k . -n $(params.DEPLOYMENT_NAMESPACE)
+
+        PATCH='{"spec":{"template":{"metadata":{"annotations":{"uuid":"'$(uuidgen)'"}}}}}'
+        oc patch deployment $(params.DEPLOYMENT_NAME) -p "$PATCH" -n $(params.DEPLOYMENT_NAMESPACE)
+        oc rollout status deploy/$(params.DEPLOYMENT_NAME) --timeout=90s -n $(params.DEPLOYMENT_NAMESPACE)
+
+      workingDir: $(workspaces.source.path)

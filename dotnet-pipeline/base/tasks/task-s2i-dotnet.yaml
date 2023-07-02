@@ -1,0 +1,146 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  annotations:
+    tekton.dev/displayName: s2i dotnet
+    tekton.dev/tags: 'softel, s2i, dotnet, workspace'
+  name: s2i-dotnet
+  labels:
+    pipeline: s2i-dotnet
+    app.kubernetes.io/version: '0.1'
+    operator.tekton.dev/provider-type: softel
+spec:
+  description: >-
+    s2i-dotnet task builds the service, containerises the application, 
+    and pushes it to a registry
+  params:
+    - default: >-
+        registry.redhat.io/rhel8/buildah@sha256:23fb7971ea6ac4aaaaa1139473a602df0df19222a3b5a76b551b2b9ddd92e927
+      description: The location of the buildah builder image.
+      name: CONTAINER_BUILDER_IMAGE
+    - default: >-
+        registry.redhat.io/ubi8/dotnet-70@sha256:87c1788c07c5ab93c87f98b0563aad4e6196849aeb1c7465a19082a93aad4ff1
+      description: The location of the dotnet source builder image
+      name: SRC_BUILDER_IMAGE
+      type: string
+    - default: latest
+      description: The tag of .NET container
+      name: VERSION
+      type: string
+    - default: vfs
+      description: Set buildah storage driver
+      name: STORAGE_DRIVER
+      type: string
+    - default: ./Dockerfile
+      description: Dockerfile present in the source code
+      name: DOCKERFILE
+      type: string
+    - default: docker
+      description: 'The format of the built container, oci or docker'
+      name: FORMAT
+      type: string
+    - default: ''
+      description: Extra parameters passed for the build command when building images.
+      name: BUILD_EXTRA_ARGS
+      type: string
+    - default: ''
+      description: Extra parameters passed for the push command
+      name: PUSH_EXTRA_ARGS
+      type: string
+    - default: .
+      description: The location of the path to run dotnet build from.
+      name: PATH_CONTEXT
+      type: string
+    - name: CONFIG_CONTEXT_PATH
+      type: string
+    - default: 'true'
+      description: >-
+        Verify the TLS on the registry endpoint (for push/pull to a non-TLS
+        registry)
+      name: TLSVERIFY
+      type: string
+    - description: Location of the repo where image has to be pushed
+      name: IMAGE_DEST
+      type: string
+  results:
+    - description: Image Digest.
+      name: IMAGE_DIGEST
+      type: string
+  workspaces:
+    - name: source
+  volumes:
+    - emptyDir: {}
+      name: varlibcontainers
+  steps:
+    - image: $(params.SRC_BUILDER_IMAGE)
+      name: dotnet-build
+      resources: {}
+      script: |-
+        #!/bin/bash
+
+        set -e
+
+        if [ -d $(params.PATH_CONTEXT) ];
+        then
+          echo "cd to $(params.PATH_CONTEXT)"
+          cd $(params.PATH_CONTEXT)
+        else
+          echo "failed to find context path provided"
+          exit 1
+        fi
+
+        # ls -lah ./
+        
+        dotnet restore "./Test.csproj"
+
+        dotnet build "Test.csproj" -c Release -r linux-x64 /p:PublishProfile=linux /p:DeployOnBuild=true
+
+        # dotnet publish "Test.csproj" -c Release -o ./publish
+
+        # ls -lah ./publish/linux-x64
+      
+      workingDir: $(workspaces.source.path)
+    - image: $(params.CONTAINER_BUILDER_IMAGE)
+      name: container-build
+      resources: {}
+      script: >-
+        #!/bin/bash
+
+        buildah --storage-driver=$(params.STORAGE_DRIVER) bud \
+          $(params.BUILD_EXTRA_ARGS) --format=$(params.FORMAT) \
+          --tls-verify=$(params.TLSVERIFY) --no-cache \
+          -f $(params.DOCKERFILE) -t $(params.IMAGE_DEST):$(params.VERSION) .
+
+      securityContext:
+        capabilities:
+          add:
+            - SETFCAP
+      volumeMounts:
+        - mountPath: /var/lib/containers
+          name: varlibcontainers
+      workingDir: $(workspaces.source.path)/$(params.PATH_CONTEXT)
+    - image: $(params.CONTAINER_BUILDER_IMAGE)
+      name: container-deploy
+      resources: {}
+      script: |-
+        #!/bin/bash
+        
+        set -ex
+
+        echo "deploying image to registry"
+
+        buildah --storage-driver=$(params.STORAGE_DRIVER) push \
+          --tls-verify=$(params.TLSVERIFY) --digestfile /tmp/image-digest \
+          $(params.PUSH_EXTRA_ARGS) $(params.IMAGE_DEST):$(params.VERSION) \
+          docker://$(params.IMAGE_DEST):$(params.VERSION)
+
+        cat /tmp/image-digest | tee $(results.IMAGE_DIGEST.path)
+
+      securityContext:
+        capabilities:
+          add:
+            - SETFCAP
+      volumeMounts:
+        - mountPath: /var/lib/containers
+          name: varlibcontainers
+      workingDir: $(workspaces.source.path)

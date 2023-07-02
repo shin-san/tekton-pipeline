@@ -1,0 +1,64 @@
+apiVersion: tekton.dev/v1beta1
+kind: PipelineRun
+metadata:
+  generateName: pipeline-dotnet-cicd-
+  labels:
+    pipeline: dotnet-cicd
+    tekton.dev/pipeline: dotnet-cicd
+spec:
+  params:
+    - name: IMAGE_NAME
+      value: quay.io/test/dotnet-test
+    - name: GIT_REVISION
+      value: main
+    - name: GIT_SCRIPT
+      value: |
+        git init
+        git clone ssh://git@git.test.com.au/test/test.git
+        cd test
+        git branch -a
+    - name: TEST_DIRECTORY
+      value: ./path/to/test/directory
+    - name: OUTPUT_DIRECTORY
+      value: "."
+    - name: BUILD_EXTRA_ARGS
+      value: "--build-arg=PUBLISH_DIR=./publish/linux-x64"
+    - name: TLSVERIFY
+      value: false
+    - name: TEST_PATH_CONTEXT
+      value: ./overlays/dev/test
+    - name: DOCKERFILE
+      value: ./Dockerfile
+    - name: CONFIG_CONTEXT_PATH
+      value: ./overlays/dev
+    - name: CONFIG_APP_NAME
+      value: test
+    - name: DEPLOYMENT_NAMESPACE
+      value: test-namespace
+  pipelineRef:
+    name: dotnet-cicd
+  serviceAccountName: pipeline
+  # Use this to run the pipeline as root
+  # podTemplate:
+  #   securityContext:
+  #     runAsUser: 0
+  timeout: 1h0m0s
+  workspaces:
+    # - name: shared-data
+    #   volumeClaimTemplate:
+    #     metadata:
+    #       creationTimestamp: null
+    #     spec:
+    #       accessModes:
+    #         - ReadWriteOnce
+    #       resources:
+    #         requests:
+    #           storage: 5Gi
+    #       storageClassName: thin-csi
+    #       volumeMode: Filesystem
+    - name: shared-data
+      persistentVolumeClaim:
+        claimName: pipeline-dotnet-cicd-storage
+    - name: ssh-creds
+      secret:
+        secretName: ssh-key

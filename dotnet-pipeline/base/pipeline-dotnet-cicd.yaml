@@ -1,0 +1,184 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: dotnet-cicd
+spec:
+  params:
+    - name: IMAGE_NAME
+      type: string
+    - name: GIT_REVISION
+      type: string
+    - name: GIT_SCRIPT
+      type: string
+    - name: TEST_DIRECTORY
+      type: string
+    - name: OUTPUT_DIRECTORY
+      type: string
+    - name: BUILD_EXTRA_ARGS
+      type: string
+    - name: TLSVERIFY
+      type: string
+    - name: TEST_PATH_CONTEXT
+      type: string
+    - name: DOCKERFILE
+      type: string
+    - name: CONFIG_CONTEXT_PATH
+      type: string
+    - name: CONFIG_APP_NAME
+      type: string
+    - name: DEPLOYMENT_NAMESPACE
+      type: string
+  tasks:
+      # Git Clone
+    - name: fetch-repository
+      params:
+        - name: GIT_REPO
+          value: $(params.GIT_REPO)
+        - name: GIT_USER_NAME
+          value: user
+        - name: GIT_USER_EMAIL
+          value: user@email.com
+        - name: GIT_REVISION
+          value: $(params.GIT_REVISION)
+        - name: GIT_SCRIPT
+          value: $(params.GIT_SCRIPT)
+      taskRef:
+        kind: ClusterTask
+        name: git-cli
+      workspaces:
+        - name: source
+          workspace: shared-data
+        - name: ssh-directory
+          workspace: ssh-creds
+
+      # Unit Test
+    - name: unit-test
+      params:
+        - name: TEST_DIRECTORY
+          value: $(params.TEST_DIRECTORY)
+        - name: PATH_CONTEXT
+          value: $(params.TEST_PATH_CONTEXT)
+        - name: OUTPUT_DIRECTORY
+          value: $(params.OUTPUT_DIRECTORY)
+      taskRef:
+        kind: Task
+        name: dotnet-unit-test
+      workspaces:
+        - name: source
+          workspace: shared-data
+      runAfter:
+        - fetch-repository
+
+      # Build Containers
+    - name: build
+      params:
+        - name: IMAGE_DEST
+          value: $(params.IMAGE_NAME)
+        - name: VERSION
+          value: $(tasks.fetch-repository.results.commit)
+        - name: BUILD_EXTRA_ARGS
+          value: $(params.BUILD_EXTRA_ARGS)
+        - name: TLSVERIFY
+          value: $(params.TLSVERIFY)
+        - name: PATH_CONTEXT
+          value: $(params.PATH_CONTEXT)
+        - name: DOCKERFILE
+          value: $(params.DOCKERFILE)
+      taskRef:
+        kind: Task
+        name: s2i-dotnet
+      workspaces:
+        - name: source
+          workspace: shared-data
+      runAfter:
+        - unit-test
+
+      # Update Deployment Repo with the new image
+    - name: update-config-repo
+      params:
+        - name: CONFIG_CONTEXT_PATH
+          value: $(params.CONFIG_CONTEXT_PATH)
+        - name: CONFIG_APP_NAME
+          value: $(params.CONFIG_APP_NAME)
+        - name: SCRIPT
+          value: |
+              /usr/bin/yq -V
+              /usr/bin/yq -i '.spec.template.spec.containers[0].image = "$(params.IMAGE_NAME):$(tasks.fetch-repository.results.commit)"' deployment-image.yaml
+      taskRef:
+        kind: Task
+        name: yq
+      workspaces:
+        - name: source
+          workspace: shared-data
+      runAfter:
+        - build
+
+      # Push to Repo with updated Image
+    - name: push-to-config-repo
+      params:
+        - name: GIT_REVISION
+          value: $(params.GIT_REVISION)
+        - name: GIT_USER_NAME
+          value: user
+        - name: GIT_USER_EMAIL
+          value: user@test.com
+        - name: CONFIG_CONTEXT_PATH
+          value: $(params.CONFIG_CONTEXT_PATH)
+        - name: CONFIG_APP_NAME
+          value: $(params.CONFIG_APP_NAME)
+      taskRef:
+        kind: Task
+        name: git-push-cli
+      workspaces:
+        - name: source
+          workspace: shared-data
+        - name: ssh-directory
+          workspace: ssh-creds
+      runAfter:
+        - update-config-repo
+      
+      # Deploy Service using ArgoCD
+    - name: deploy-service
+      params:
+        - name: application-name
+          value: $(params.CONFIG_APP_NAME)
+        - name: revision
+          value: $(params.GIT_REVISION)
+      taskRef:
+        kind: Task
+        name: argocd-task-sync-and-wait
+      workspaces:
+        - name: source
+          workspace: shared-data
+      runAfter:
+        - push-to-config-repo
+
+      # Deploy Service using Openshift CLI
+    # - name: deploy-service
+    #   params:
+    #     - name: DEPLOYMENT_NAME
+    #       value: $(params.CONFIG_APP_NAME)
+    #     - name: DEPLOYMENT_PATH
+    #       value: $(params.CONFIG_CONTEXT_PATH)
+    #     - name: DEPLOYMENT_NAMESPACE
+    #       value: $(params.NAMESPACE)
+    #   taskRef:
+    #     kind: Task
+    #     name: openshift-deploy
+    #   workspaces:
+    #     - name: source
+    #       workspace: shared-data
+    #   runAfter:
+    #     - push-to-config-repo
+
+  finally:
+    - name: cleanup
+      taskRef:
+        name: cleanup
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+  workspaces:
+    - name: shared-data
+    - name: ssh-creds
