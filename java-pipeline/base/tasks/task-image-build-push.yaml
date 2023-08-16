@@ -2,15 +2,15 @@ apiVersion: tekton.dev/v1beta1
 kind: Task
 metadata:
   annotations:
-    tekton.dev/displayName: s2i dotnet
-    tekton.dev/tags: 's2i, dotnet, workspace'
-  name: s2i-dotnet
+    tekton.dev/displayName: image build push
+    tekton.dev/tags: 'image, build, push'
+  name: image-build-push
   labels:
-    pipeline: s2i-dotnet
+    pipeline: image-build-push
     app.kubernetes.io/version: '0.1'
 spec:
   description: >-
-    s2i-dotnet task builds the service, containerises the application, 
+    image-build-push task builds the service, containerises the application, 
     and pushes it to a registry
   params:
     - default: >-
@@ -23,7 +23,7 @@ spec:
       name: SRC_BUILDER_IMAGE
       type: string
     - default: latest
-      description: The tag of .NET container
+      description: The tag of java container
       name: VERSION
       type: string
     - default: vfs
@@ -47,10 +47,8 @@ spec:
       name: PUSH_EXTRA_ARGS
       type: string
     - default: .
-      description: The location of the path to run dotnet build from.
+      description: The location of the path to run maven build from.
       name: PATH_CONTEXT
-      type: string
-    - name: CONFIG_CONTEXT_PATH
       type: string
     - default: 'true'
       description: >-
@@ -71,34 +69,6 @@ spec:
     - emptyDir: {}
       name: varlibcontainers
   steps:
-    - image: $(params.SRC_BUILDER_IMAGE)
-      name: dotnet-build
-      resources: {}
-      script: |-
-        #!/bin/bash
-
-        set -e
-
-        if [ -d $(params.PATH_CONTEXT) ];
-        then
-          echo "cd to $(params.PATH_CONTEXT)"
-          cd $(params.PATH_CONTEXT)
-        else
-          echo "failed to find context path provided"
-          exit 1
-        fi
-
-        # ls -lah ./
-        
-        dotnet restore "./Test.csproj"
-
-        dotnet build "Test.csproj" -c Release -r linux-x64 /p:PublishProfile=linux /p:DeployOnBuild=true
-
-        # dotnet publish "Test.csproj" -c Release -o ./publish
-
-        # ls -lah ./publish/linux-x64
-      
-      workingDir: $(workspaces.source.path)
     - image: $(params.CONTAINER_BUILDER_IMAGE)
       name: container-build
       resources: {}
